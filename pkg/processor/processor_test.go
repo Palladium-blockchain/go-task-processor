@@ -11,7 +11,7 @@ import (
 )
 
 func TestRegisterHandlerRejectsDuplicates(t *testing.T) {
-	p := NewProcessor(&fakeStorage{}, Options{})
+	p := New(&fakeStorage{})
 
 	handler := func(context.Context, Task) error { return nil }
 	if err := p.RegisterHandler("email.send", handler); err != nil {
@@ -21,6 +21,53 @@ func TestRegisterHandlerRejectsDuplicates(t *testing.T) {
 	err := p.RegisterHandler("email.send", handler)
 	if err == nil {
 		t.Fatal("expected duplicate RegisterHandler to fail")
+	}
+}
+
+func TestNewUsesDefaultOptions(t *testing.T) {
+	p := New(&fakeStorage{})
+
+	if p.cfg.LockTTL != 10*time.Second {
+		t.Fatalf("unexpected default lock TTL: got %s", p.cfg.LockTTL)
+	}
+	if p.cfg.PollInterval != time.Second {
+		t.Fatalf("unexpected default poll interval: got %s", p.cfg.PollInterval)
+	}
+	if p.cfg.PollBatchSize != 10 {
+		t.Fatalf("unexpected default poll batch size: got %d", p.cfg.PollBatchSize)
+	}
+	if p.cfg.Concurrency != 10 {
+		t.Fatalf("unexpected default concurrency: got %d", p.cfg.Concurrency)
+	}
+	if cap(p.queue) != 20 {
+		t.Fatalf("unexpected default queue size: got %d", cap(p.queue))
+	}
+}
+
+func TestNewProcessorAppliesFunctionalOptions(t *testing.T) {
+	p := New(
+		&fakeStorage{},
+		WithLockTTL(5*time.Second),
+		WithPollInterval(2*time.Second),
+		WithPollBatchSize(7),
+		WithConcurrency(3),
+		WithQueueSize(11),
+	)
+
+	if p.cfg.LockTTL != 5*time.Second {
+		t.Fatalf("unexpected lock TTL: got %s", p.cfg.LockTTL)
+	}
+	if p.cfg.PollInterval != 2*time.Second {
+		t.Fatalf("unexpected poll interval: got %s", p.cfg.PollInterval)
+	}
+	if p.cfg.PollBatchSize != 7 {
+		t.Fatalf("unexpected poll batch size: got %d", p.cfg.PollBatchSize)
+	}
+	if p.cfg.Concurrency != 3 {
+		t.Fatalf("unexpected concurrency: got %d", p.cfg.Concurrency)
+	}
+	if cap(p.queue) != 11 {
+		t.Fatalf("unexpected queue size: got %d", cap(p.queue))
 	}
 }
 
@@ -36,7 +83,7 @@ func TestProcessByIDCompletesTaskOnSuccess(t *testing.T) {
 		},
 		tryLockOK: true,
 	}
-	p := NewProcessor(storage, Options{})
+	p := New(storage)
 
 	handlerCalled := make(chan struct{}, 1)
 	if err := p.RegisterHandler("email.send", func(context.Context, Task) error {
@@ -65,7 +112,7 @@ func TestProcessByIDCompletesTaskOnSuccess(t *testing.T) {
 func TestExecuteRetriesTaskOnTransientError(t *testing.T) {
 	taskID := TaskID(uuid.New())
 	storage := &fakeStorage{}
-	p := NewProcessor(storage, Options{})
+	p := New(storage)
 
 	if err := p.RegisterHandler("email.send", func(context.Context, Task) error {
 		return errors.New("temporary")
@@ -95,7 +142,7 @@ func TestExecuteRetriesTaskOnTransientError(t *testing.T) {
 func TestExecuteFailsTaskAfterMaxAttempts(t *testing.T) {
 	taskID := TaskID(uuid.New())
 	storage := &fakeStorage{}
-	p := NewProcessor(storage, Options{})
+	p := New(storage)
 
 	if err := p.RegisterHandler("email.send", func(context.Context, Task) error {
 		return errors.New("permanent")
@@ -127,7 +174,7 @@ func TestSubmitPersistsTaskAndQueuesID(t *testing.T) {
 	storage := &fakeStorage{
 		createTask: Task{ID: taskID},
 	}
-	p := NewProcessor(storage, Options{QueueSize: 1, Concurrency: 1})
+	p := New(storage, WithQueueSize(1), WithConcurrency(1))
 
 	if err := p.Submit(context.Background(), Task{Type: "email.send"}); err != nil {
 		t.Fatalf("Submit returned error: %v", err)

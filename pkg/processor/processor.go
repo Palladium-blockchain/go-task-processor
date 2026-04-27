@@ -9,7 +9,9 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type Options struct {
+type Option func(*processorConfig)
+
+type processorConfig struct {
 	LockTTL       time.Duration
 	PollInterval  time.Duration
 	PollBatchSize int
@@ -18,35 +20,62 @@ type Options struct {
 }
 
 type Processor struct {
-	options  Options
+	cfg      processorConfig
 	storage  TaskStorage
 	queue    chan TaskID
 	handlers map[string]TaskHandler
 	mu       sync.Mutex
 }
 
-func NewProcessor(storage TaskStorage, options Options) *Processor {
-	if options.LockTTL <= 0 {
-		options.LockTTL = 30 * time.Second
+func New(storage TaskStorage, opts ...Option) *Processor {
+	cfg := processorConfig{
+		LockTTL:       10 * time.Second,
+		PollInterval:  time.Second,
+		PollBatchSize: 10,
+		Concurrency:   10,
+		QueueSize:     20,
 	}
-	if options.PollInterval <= 0 {
-		options.PollInterval = time.Second
-	}
-	if options.PollBatchSize <= 0 {
-		options.PollBatchSize = 100
-	}
-	if options.Concurrency <= 0 {
-		options.Concurrency = 10
-	}
-	if options.QueueSize <= 0 {
-		options.QueueSize = options.Concurrency
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
 	}
 
 	return &Processor{
-		options:  options,
+		cfg:      cfg,
 		storage:  storage,
-		queue:    make(chan TaskID, options.QueueSize),
+		queue:    make(chan TaskID, cfg.QueueSize),
 		handlers: map[string]TaskHandler{},
+	}
+}
+
+func WithLockTTL(lockTTL time.Duration) Option {
+	return func(options *processorConfig) {
+		options.LockTTL = lockTTL
+	}
+}
+
+func WithPollInterval(pollInterval time.Duration) Option {
+	return func(options *processorConfig) {
+		options.PollInterval = pollInterval
+	}
+}
+
+func WithPollBatchSize(pollBatchSize int) Option {
+	return func(options *processorConfig) {
+		options.PollBatchSize = pollBatchSize
+	}
+}
+
+func WithConcurrency(concurrency int) Option {
+	return func(options *processorConfig) {
+		options.Concurrency = concurrency
+	}
+}
+
+func WithQueueSize(queueSize int) Option {
+	return func(options *processorConfig) {
+		options.QueueSize = queueSize
 	}
 }
 
@@ -80,7 +109,7 @@ func (p *Processor) RegisterHandler(taskType string, handler TaskHandler) error 
 func (p *Processor) Run(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
 
-	for i := 0; i < p.options.Concurrency; i++ {
+	for i := 0; i < p.cfg.Concurrency; i++ {
 		g.Go(func() error {
 			p.worker(ctx)
 			return nil
@@ -107,7 +136,7 @@ func (p *Processor) worker(ctx context.Context) {
 }
 
 func (p *Processor) processByID(ctx context.Context, taskID TaskID) {
-	task, ok, err := p.storage.TryLock(ctx, taskID, p.options.LockTTL)
+	task, ok, err := p.storage.TryLock(ctx, taskID, p.cfg.LockTTL)
 	if err != nil || !ok {
 		return
 	}
@@ -133,7 +162,7 @@ func (p *Processor) execute(ctx context.Context, task Task) error {
 }
 
 func (p *Processor) poller(ctx context.Context) {
-	ticker := time.NewTicker(p.options.PollInterval)
+	ticker := time.NewTicker(p.cfg.PollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -141,7 +170,7 @@ func (p *Processor) poller(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			tasks, err := p.storage.FetchAndLock(ctx, p.options.PollBatchSize, p.options.LockTTL)
+			tasks, err := p.storage.FetchAndLock(ctx, p.cfg.PollBatchSize, p.cfg.LockTTL)
 			if err != nil {
 				continue
 			}
