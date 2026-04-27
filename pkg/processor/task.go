@@ -9,6 +9,10 @@ import (
 
 type TaskID uuid.UUID
 
+func NewTaskID() TaskID {
+	return TaskID(uuid.New())
+}
+
 const (
 	TaskStatusPending = iota
 	TaskStatusRunning
